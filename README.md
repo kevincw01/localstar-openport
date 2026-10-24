@@ -39,6 +39,30 @@ python -m pip install -r requirements.txt
 `-PythonCommand` selects another Python executable. The PowerShell launcher checks
 that the drive is removable and FAT32. Neither tool formats disks.
 
+On Linux and macOS, use the Bash launcher with Python 3.11+:
+
+```sh
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+./new-venstar-card.sh --update-bin firmware/update.bin --target card \
+  --credentials-dir credentials --dry-run
+./new-venstar-card.sh --update-bin firmware/update.bin --target card \
+  --credentials-dir credentials
+```
+
+To write directly to a mounted FAT32 card, replace `card` with its mount directory,
+such as `/Volumes/VENSTAR` on macOS or `/media/$USER/VENSTAR` on Linux. Confirm the
+actual mount path first; the launcher accepts staging directories too and does not
+automatically check filesystem type or mount status. Keep credentials on your
+computer, outside that directory, and eject the card after writing completes.
+
+Use `--python /path/to/python3` or the `PYTHON` environment variable to select an
+interpreter. All builder options, including `--reuse-credentials`, `--force`,
+`--device-version`, and `--expected-sha256`, are forwarded unchanged. Run
+`./new-venstar-card.sh --help` for usage. The launcher also runs with macOS's
+stock Bash 3.2; Python 3.11+ must be installed separately if unavailable.
+
 The cross-platform Python builder writes to a mounted card or staging directory:
 
 ```sh
@@ -146,4 +170,6 @@ Tests generate disposable credentials and miniature synthetic firmware container
 They exercise real local TLS sockets, root isolation, ping/echo, local time, weather
 conversion, and card contents without contacting the weather provider or a thermostat.
 If PowerShell is installed, the launcher is also exercised against a staging folder.
+On POSIX systems, the Bash launcher is tested from another working directory with
+paths containing spaces, dry runs, explicit credential reuse, and invalid inputs.
 Firmware acceptance and on-device import/rendering require a separate hardware test.

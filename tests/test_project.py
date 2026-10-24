@@ -123,6 +123,48 @@ class TestCard(unittest.TestCase):
         self.assertTrue((card / 'VH/skyport_root.pem').is_file())
         validate(creds)
 
+    @unittest.skipUnless(os.name == 'posix' and shutil.which('bash'), 'POSIX Bash launcher')
+    def test_bash_launcher_build_dry_run_reuse_and_errors(self):
+        launcher = str(ROOT / 'new-venstar-card.sh')
+        card = self.root / 'card with spaces'
+        creds = self.root / 'keys with spaces'
+        package = self.root / 'firmware with spaces.bin'
+        shutil.copyfile(self.update, package)
+        args = [launcher, '--python', sys.executable, '--update-bin', str(package),
+                '--target', str(card), '--credentials-dir', str(creds)]
+
+        def run(arguments):
+            return subprocess.run(arguments, cwd=self.root, capture_output=True, text=True)
+
+        inspected = run([*args, '--dry-run'])
+        self.assertEqual(inspected.returncode, 0, inspected.stderr)
+        self.assertFalse(card.exists())
+        self.assertFalse(creds.exists())
+        written = run(args)
+        self.assertEqual(written.returncode, 0, written.stderr)
+        self.assertEqual((card / 'VH/firmware1a/update.bin').read_bytes(), package.read_bytes())
+        original = validate(creds)['root_sha256']
+        reused = run([*args, '--reuse-credentials', '--force'])
+        self.assertEqual(reused.returncode, 0, reused.stderr)
+        self.assertEqual(validate(creds)['root_sha256'], original)
+        for path in card.rglob('*'):
+            if path.is_file():
+                self.assertNotIn(b'PRIVATE KEY', path.read_bytes())
+
+        bad_package = run([*args, '--device-version', '6.92', '--force', '--reuse-credentials'])
+        self.assertNotEqual(bad_package.returncode, 0)
+        self.assertIn('must exactly match', bad_package.stderr)
+        missing_value = run([launcher, '--python'])
+        self.assertEqual(missing_value.returncode, 2)
+        missing_interpreter = run([launcher, '--python', str(self.root / 'missing python')])
+        self.assertEqual(missing_interpreter.returncode, 127)
+        help_result = run([launcher, '--help'])
+        self.assertEqual(help_result.returncode, 0, help_result.stderr)
+        self.assertIn('--reuse-credentials', help_result.stdout)
+        empty = run([launcher, '--python', sys.executable])
+        self.assertEqual(empty.returncode, 2)
+        self.assertIn('required', empty.stderr)
+
 
 def free_port():
     with socket.socket() as sock:
