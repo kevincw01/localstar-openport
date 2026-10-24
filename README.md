@@ -1,32 +1,54 @@
 # Venstar local Skyport server
 
-A local weather and time server for Venstar ColorTouch thermostats using the
-VH6.93 Skyport protocol. Includes an SD-card builder that creates a **new random
-root CA and matching server certificate for each installation**. No shared keys,
-pre-generated certificates, firmware images, or deployment configuration are included.
+The T7850 thermostat is popular with the smart home crowd because it provides a
+local API for controlling the thermostat with solutions like Home Assistant.  
+The only remaining problem is that the thermostat's do not support time or weather
+updates via this local API.  The thermostat also does not support NTP.  The only
+method to gain time synchronization and outdoor weather on the thermostats is by
+enabling the venstart skyport cloud interface.  
 
-The existing Home Assistant Venstar integration continues to control the thermostat
-through its local API. This project implements the separate Skyport weather session;
-it does not implement the vendor's cloud account, firmware updater, or remote restart.
+This project provides a solution to replicate the cloud interface for weather and
+time using a local server.  The implementation relies on an exploit which replaces
+the local root CA on the device with a locally generated version.  The exploit 
+leverages the SD card interface to deploy the new root CA.  
+
+This project includes an SD-card builder script that creates a **new random
+root CA and matching server certificate for each installation**. No shared keys,
+pre-generated certificates, firmware images, or deployment configuration are
+included.  The existing Home Assistant Venstar integration continues to control 
+the thermostat through its local API. This project implements the separate Skyport
+weather session; it does not implement all the features of skyport, only weather, 
+ping and time.  
+
+The local skyport server is designed to run on linux but could be ported to other
+operating systems or as a Home Assistant add-on fairly easily.  Besides the unique
+root CA that must be deployed to the thermostat via the SD card, the local network
+dns server (typically on the local internet router/firewall) must be configured to
+route the cloud address to the LAN server.  Open-meteo is used by the server to
+serve weather for your location to the thermostat.
 
 ## Requirements
 
+- Download or clone this repo to your system
 - Python 3.11+ and `python -m pip install -r requirements.txt`.
 - A FAT32 SD card, mounted on your computer, and an official VH firmware package
-  whose version exactly matches the thermostat's installed version.
+  whose version exactly matches the thermostat's installed version.  
 - A server reachable from the thermostat on TCP 9001 and 41414, with internet
   access to Open-Meteo and an accurate clock.
-- A local DNS override for `connect.skyport.io` pointing at your server.
+- A local DNS override on your network router for `connect.skyport.io` which
+  points at your local server's IP address.
 
 The SD import mechanism is specific to the VH firmware's Images importer. It has
-not been validated across all ColorTouch models or firmware versions. Package
-checks validate the container header, version, length, and initial image magic;
-they are not vendor signature verification. Obtain firmware from the manufacturer,
-and optionally supply its trusted SHA-256 with `--expected-sha256`.
+not been validated across all ColorTouch models or firmware versions. This project
+was tested on a T7850 with firmware VH6.93.  Other firmware versions or 
+thermostats may work also. Package checks validate the container header, version, 
+length, and initial image magic; they are not vendor signature verification. 
+Obtain firmware from the manufacturer which is downloadable from their website.  
+You can optionally supply its trusted SHA-256 with `--expected-sha256`.
 
 ## Build the SD card and generate credentials
 
-On Windows, from a Python-enabled terminal (replace `E` with your card's letter):
+On Windows, from a Python-enabled terminal (replace `E` with your card's drive letter which is mounted in windows):
 
 ```powershell
 python -m pip install -r requirements.txt
@@ -39,7 +61,8 @@ python -m pip install -r requirements.txt
 `-PythonCommand` selects another Python executable. The PowerShell launcher checks
 that the drive is removable and FAT32. Neither tool formats disks.
 
-On Linux and macOS, use the Bash launcher with Python 3.11+:
+On Linux and macOS, use the Bash launcher with Python 3.11+ (I haven't tested this
+because all my linux machines are headless without sd card readers):
 
 ```sh
 python3 -m venv .venv
@@ -87,13 +110,14 @@ The credentials directory must be outside the card directory, and vice versa:
 | `server.key` | Private server key, used only on the server |
 
 Every fresh run generates independent RSA keys and random certificate serials.
-Existing credential directories are refused. To provision another thermostat for
-the **same** server, explicitly pass `--reuse-credentials` (`-ReuseCredentials` in
-PowerShell) with that installation's directory. `--force` permits replacing card
-output files but never overwrites credentials. Back up the credentials separately;
-Git ignores generated certificates and keys. POSIX systems use restrictive file
-permissions; on Windows, keep the credential directory under your private user
-profile and restrict access using Windows ACLs.
+Existing credential directories are refused. To provision another thermostat you can
+re-use the same SD card.  But if for some reason you need to regenerate the same cert,
+explicitly pass `--reuse-credentials` (`-ReuseCredentials` in PowerShell) with that 
+installation's directory. `--force` permits replacing card output files but never 
+overwrites credentials. Back up the credentials separately; Git ignores generated 
+certificates and keys. POSIX systems use restrictive file permissions; on Windows, 
+keep the credential directory under your private user profile and restrict access 
+using Windows ACLs.
 
 The generated root and leaf are valid from 1970-01-01 through 2037-12-12 so a device
 with an unset clock can validate them. They use a private CA, not publicly trusted
@@ -114,21 +138,6 @@ VH/
 No private key is copied onto the card. The gallery index uses a path traversal
 in the Images importer to replace `/home/volatile/skyport_root.pem` with your root.
 Use this only on thermostats you own and intend to redirect to your server.
-
-## Import on the thermostat
-
-1. Save any custom wallpapers you want to keep: importing Images clears the gallery.
-2. Eject the card, insert it into the thermostat, and open **Settings > Import/Export**.
-3. Select **Images**, then use the transfer button. Inserting the card and rebooting
-   alone does not execute the import. The matching firmware package enables this UI;
-   do not accept an unexpected firmware upgrade.
-4. Remove the card and restart the thermostat to reload the trust anchor.
-
-The importer may report success even if copying failed. A successful TLS login in
-the server log is better evidence that the root was accepted. Retain a copy of the
-original vendor root before replacing it if you want to restore vendor connectivity.
-Restoring it requires an import tool that accepts that original certificate; this
-builder intentionally accepts only its own epoch-valid generated bundles.
 
 ## Run the server
 
@@ -155,10 +164,23 @@ the internet is required.
 
 TLS 1.2+ is used by default. `--allow-old-tls` explicitly enables older TLS/ciphers
 for firmware that requires them. Logs include every received ping and successful
-echo separately. A successful weather send does not prove that the thermostat
-display rendered it. If the weather page stays empty after reboot, toggling
-**Skyport > Weather Updates** off/on can trigger a new request; automatic display
-recovery is not guaranteed by this implementation.
+echo separately.
+
+
+## Import on the thermostat
+
+1. Save any custom wallpapers you want to keep: importing Images clears the gallery.
+2. Eject the card, insert it into the thermostat, and open **Settings > Import/Export**.
+3. Select **Images**, then use the transfer button. The matching firmware package enables
+   this UI; **If you're prompted to update the firmware, something is wrong, do not accept!**
+4. After import, remove the card and restart the thermostat to reload the trust anchor.
+
+A successful TLS login in the local server log is evidence that the root was accepted. 
+The top right corner of the thermostat display show a globe with a green check and the
+temperature next to a tree will be besides it.  Sometimes it takes a few minutes for the 
+temperature to show up.  You can force it to show by turning off / on weather updates in
+the skyport settings.
+
 
 ## Tests
 
