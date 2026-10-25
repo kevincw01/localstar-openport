@@ -22,29 +22,21 @@ from credentials import generate, validate, NOT_BEFORE
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def firmware(path, version=(6, 93)):
-    header = bytearray(22)
-    header[:4] = bytes((ord('V'), ord('H'), version[1], version[0]))
-    struct.pack_into('<II', header, 8, 4, 4)
-    path.write_bytes(header + b'\x27\x05\x19\x56TEST')
-    return path
-
-
 class TestCard(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.update = firmware(self.root / 'update.bin')
         self.card = self.root / 'card'
         self.creds = self.root / 'credentials'
 
     def make(self, **kwargs):
-        return build(self.update, self.card, self.creds, **kwargs)
+        kwargs.setdefault('device_version', 'VH6.93')
+        return build(self.card, self.creds, **kwargs)
 
     def test_fresh_roots_card_contents_and_explicit_reuse(self):
         first = self.make()
-        other = build(self.update, self.root / 'other-card', self.root / 'other-creds')
+        other = build(self.root / 'other-card', self.root / 'other-creds', device_version='VH6.93')
         self.assertNotEqual(first['credentials']['root_sha256'], other['credentials']['root_sha256'])
         expected = set(first['files'])
         files = {str(p.relative_to(self.card)).replace(os.sep, '/') for p in self.card.rglob('*') if p.is_file()}
@@ -52,7 +44,7 @@ class TestCard(unittest.TestCase):
         root_bytes = (self.creds / 'root-ca.pem').read_bytes()
         self.assertEqual((self.card / 'VH/skyport_root.pem').read_bytes(), root_bytes)
         self.assertEqual((self.card / 'VH/gallery/skyport_root.pem').read_bytes(), root_bytes)
-        self.assertEqual((self.card / 'VH/firmware1a/update.bin').read_bytes(), self.update.read_bytes())
+        self.assertEqual((self.card / 'VH/firmware1a/update.bin').read_bytes(), b'VH\x5d\x06')
         for path in self.card.rglob('*'):
             if path.is_file():
                 self.assertNotIn(b'PRIVATE KEY', path.read_bytes())
@@ -78,16 +70,16 @@ class TestCard(unittest.TestCase):
         public = self.root / 'downloaded-root.pem'
         public.write_bytes((self.creds / 'root-ca.pem').read_bytes())
         shutil.rmtree(self.creds)
-        inspected = build(self.update, self.card, root_ca_pem=public, dry_run=True)
+        inspected = build(self.card, root_ca_pem=public, device_version='VH6.93', dry_run=True)
         self.assertTrue(inspected['dry_run'])
         self.assertFalse(self.card.exists())
-        result = build(self.update, self.card, root_ca_pem=public)
+        result = build(self.card, root_ca_pem=public, device_version='VH6.93')
         self.assertIsNone(result['credentials'])
         self.assertEqual((self.card / 'VH/skyport_root.pem').read_bytes(), public.read_bytes())
         self.assertFalse(self.creds.exists())
         self.assertFalse(any(self.card.rglob('*.key')))
         with self.assertRaises(ValueError):
-            build(self.update, self.card, self.creds, root_ca_pem=public, force=True)
+            build(self.card, self.creds, device_version='VH6.93', root_ca_pem=public, force=True)
 
     def test_public_ca_rejects_leaf_and_private_key_material(self):
         generate(self.creds)
@@ -96,25 +88,22 @@ class TestCard(unittest.TestCase):
             public = self.root / 'bad-root.pem'
             public.write_bytes(data)
             with self.assertRaises(ValueError):
-                build(self.update, self.card, root_ca_pem=public)
+                build(self.card, root_ca_pem=public, device_version='VH6.93')
         self.assertFalse(self.card.exists())
 
-    def test_bad_firmware_rejected_before_writes(self):
+    def test_bad_device_version_rejected_before_writes(self):
         with self.assertRaises(ValueError):
-            self.make(device_version='6.92')
+            self.make(device_version='VH6.92')
         with self.assertRaises(ValueError):
-            self.make(expected_sha256='0' * 64)
-        self.update.write_bytes(self.update.read_bytes()[:-1])
-        with self.assertRaises(ValueError):
-            self.make()
+            self.make(device_version='not-a-version')
         self.assertFalse(self.creds.exists())
         self.assertFalse(self.card.exists())
 
     def test_private_material_cannot_be_under_card(self):
         with self.assertRaises(ValueError):
-            build(self.update, self.card, self.card / 'credentials')
+            build(self.card, self.card / 'credentials', device_version='VH6.93')
         with self.assertRaises(ValueError):
-            build(self.update, self.creds / 'card', self.creds)
+            build(self.creds / 'card', self.creds, device_version='VH6.93')
         self.assertFalse(self.creds.exists())
 
     def test_credential_mismatch_is_rejected(self):
@@ -141,7 +130,7 @@ class TestCard(unittest.TestCase):
         card = self.root / 'card with spaces'
         creds = self.root / 'keys with spaces'
         args = ['pwsh', '-NoProfile', '-File', str(ROOT / 'New-VenstarCard.ps1'),
-                '-TargetPath', str(card), '-UpdateBin', str(self.update),
+                '-TargetPath', str(card), '-DeviceVersion', 'VH6.93',
                 '-CredentialsDirectory', str(creds), '-PythonCommand', sys.executable]
         subprocess.run([*args, '-Inspect'], check=True, capture_output=True, text=True)
         self.assertFalse(creds.exists())
@@ -150,7 +139,7 @@ class TestCard(unittest.TestCase):
         validate(creds)
         imported = self.root / 'public CA card'
         public_args = ['pwsh', '-NoProfile', '-File', str(ROOT / 'New-VenstarCard.ps1'),
-                       '-TargetPath', str(imported), '-UpdateBin', str(self.update),
+                       '-TargetPath', str(imported), '-DeviceVersion', 'VH6.93',
                        '-RootCaPem', str(creds / 'root-ca.pem'), '-PythonCommand', sys.executable]
         subprocess.run(public_args, check=True, capture_output=True, text=True)
         self.assertEqual((imported / 'VH/skyport_root.pem').read_bytes(),
@@ -161,9 +150,7 @@ class TestCard(unittest.TestCase):
         launcher = str(ROOT / 'new-venstar-card.sh')
         card = self.root / 'card with spaces'
         creds = self.root / 'keys with spaces'
-        package = self.root / 'firmware with spaces.bin'
-        shutil.copyfile(self.update, package)
-        args = [launcher, '--python', sys.executable, '--update-bin', str(package),
+        args = [launcher, '--python', sys.executable, '--firmware-version', 'VH6.93',
                 '--target', str(card), '--credentials-dir', str(creds)]
 
         def run(arguments):
@@ -175,13 +162,13 @@ class TestCard(unittest.TestCase):
         self.assertFalse(creds.exists())
         written = run(args)
         self.assertEqual(written.returncode, 0, written.stderr)
-        self.assertEqual((card / 'VH/firmware1a/update.bin').read_bytes(), package.read_bytes())
+        self.assertEqual((card / 'VH/firmware1a/update.bin').read_bytes(), b'VH\x5d\x06')
         original = validate(creds)['root_sha256']
         reused = run([*args, '--reuse-credentials', '--force'])
         self.assertEqual(reused.returncode, 0, reused.stderr)
         self.assertEqual(validate(creds)['root_sha256'], original)
         imported = self.root / 'public CA card'
-        public_result = run([launcher, '--python', sys.executable, '--update-bin', str(package),
+        public_result = run([launcher, '--python', sys.executable, '--firmware-version', 'VH6.93',
                              '--target', str(imported), '--root-ca-pem', str(creds / 'root-ca.pem')])
         self.assertEqual(public_result.returncode, 0, public_result.stderr)
         self.assertEqual((imported / 'VH/skyport_root.pem').read_bytes(),
@@ -190,9 +177,9 @@ class TestCard(unittest.TestCase):
             if path.is_file():
                 self.assertNotIn(b'PRIVATE KEY', path.read_bytes())
 
-        bad_package = run([*args, '--device-version', '6.92', '--force', '--reuse-credentials'])
+        bad_package = run([*args, '--firmware-version', 'not-a-version', '--force', '--reuse-credentials'])
         self.assertNotEqual(bad_package.returncode, 0)
-        self.assertIn('must exactly match', bad_package.stderr)
+        self.assertIn('must look like VH6.93', bad_package.stderr)
         missing_value = run([launcher, '--python'])
         self.assertEqual(missing_value.returncode, 2)
         missing_interpreter = run([launcher, '--python', str(self.root / 'missing python')])

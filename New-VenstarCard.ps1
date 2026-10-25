@@ -5,7 +5,8 @@ Build a Venstar VH CA-import SD card with fresh installation-specific credential
 .DESCRIPTION
 Requires Python 3.11+ and the packages in requirements.txt. Does not format cards.
 When generating, private keys are written to CredentialsDirectory, never to the SD card.
-Alternatively use RootCaPem for a public CA downloaded from the HA add-on; no keys are read or generated.
+Alternatively use RootCaPem for the active public CA; no keys are read or generated.
+Enter the firmware version shown on the thermostat About screen; only a four-byte version stub is written.
 Inspect validates inputs without writing files or generating credentials.
 #>
 [CmdletBinding()]
@@ -13,12 +14,10 @@ param(
     [Parameter(Mandatory = $true, ParameterSetName = 'Drive')]
     [ValidatePattern('^[A-Za-z]$')][string]$DriveLetter,
     [Parameter(Mandatory = $true, ParameterSetName = 'Path')][string]$TargetPath,
-    [Parameter(Mandatory = $true)][string]$UpdateBin,
     [string]$CredentialsDirectory,
     [string]$RootCaPem,
-    [string]$DeviceVersion = '6.93',
+    [Parameter(Mandatory = $true)][string]$DeviceVersion,
     [string]$PythonCommand = 'python',
-    [string]$ExpectedSha256,
     [switch]$ReuseCredentials,
     [switch]$Inspect,
     [switch]$Force
@@ -33,11 +32,9 @@ if ($DriveLetter) {
     $TargetPath = "${DriveLetter}:\"
 }
 $builder = Join-Path $PSScriptRoot 'build_sdcard.py'
-$builderArgs = @($builder, '--update-bin', $UpdateBin, '--target', $TargetPath,
-    '--device-version', $DeviceVersion)
+$builderArgs = @($builder, '--target', $TargetPath, '--firmware-version', $DeviceVersion)
 if ($CredentialsDirectory) { $builderArgs += @('--credentials-dir', $CredentialsDirectory) }
 if ($RootCaPem) { $builderArgs += @('--root-ca-pem', $RootCaPem) }
-if ($ExpectedSha256) { $builderArgs += @('--expected-sha256', $ExpectedSha256) }
 if ($ReuseCredentials) { $builderArgs += '--reuse-credentials' }
 if ($Inspect) { $builderArgs += '--dry-run' }
 if ($Force) { $builderArgs += '--force' }

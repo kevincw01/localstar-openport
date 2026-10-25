@@ -1,45 +1,28 @@
 #!/usr/bin/env python3
-"""Build a VH CA-import card with new credentials or an existing public root."""
+"""Build a VH CA-import card with a version stub and a public root CA."""
 
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
 import re
-import shutil
-import struct
 import tempfile
+import time
 
 from credentials import generate, public_root, validate
 
-GALLERY = b'{"imgs":[{"path":"../skyport_root.pem","useAsBackground":false}]}\n'
+VERSION_PATTERN = re.compile(r"^VH([0-9]{1,3})\.([0-9]{2})$", re.IGNORECASE)
 
 
-def digest(path):
-    with Path(path).open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
-
-
-def firmware_header(path, device_version):
-    path = Path(path)
-    with path.open("rb") as stream:
-        head = stream.read(26)
-    if len(head) != 26 or head[:2] != b"VH":
-        raise ValueError("Expected a residential VH firmware package")
-    match = re.fullmatch(r"(\d+)\.(\d{1,2})", device_version)
+def firmware_stub(device_version):
+    match = VERSION_PATTERN.fullmatch(device_version.strip()) if isinstance(device_version, str) else None
     if not match:
-        raise ValueError("Device version must look like 6.93")
-    version = (int(head[3]), int(head[2]))
-    expected = (int(match[1]), int(match[2]))
-    if version != expected:
-        raise ValueError("Firmware version must exactly match the installed device version")
-    slot1, slot2 = struct.unpack_from("<II", head, 8)
-    if slot1 < 4 or slot2 < 1 or path.stat().st_size != 22 + slot1 + slot2:
-        raise ValueError("Firmware package length does not match its header")
-    if head[22:26] != b"\x27\x05\x19\x56":
-        raise ValueError("Firmware package is missing the first uImage header magic")
-    return {"version": f"{version[0]}.{version[1]:02}", "sha256": digest(path)}
+        raise ValueError("Firmware version must look like VH6.93, as shown on the About screen")
+    major, minor = (int(part) for part in match.groups())
+    if major > 255:
+        raise ValueError("Firmware major version must be between 0 and 255")
+    version = f"VH{major}.{minor:02}"
+    return version, bytes((ord("V"), ord("H"), minor, major))
 
 
 def _check_destination(card, relative):
@@ -56,44 +39,35 @@ def _check_destination(card, relative):
     return destination
 
 
-def _replace(destination, source=None, contents=None):
+def _replace(destination, contents):
     destination.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=".venstar-", dir=destination.parent)
     try:
         with os.fdopen(fd, "wb") as stream:
-            if source is not None:
-                with source.open("rb") as input_stream:
-                    shutil.copyfileobj(input_stream, stream)
-            else:
-                stream.write(contents)
+            stream.write(contents)
         os.replace(temporary, destination)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
 
 
-def build(update_bin, target, credentials_dir=None, device_version="6.93", *,
-          reuse_credentials=False, dry_run=False, force=False, expected_sha256=None,
+def build(target, credentials_dir=None, device_version=None, *,
+          reuse_credentials=False, dry_run=False, force=False,
           root_ca_pem=None):
     if bool(credentials_dir) == bool(root_ca_pem):
         raise ValueError("Specify either credentials_dir or root_ca_pem, not both")
     if root_ca_pem and reuse_credentials:
         raise ValueError("Public-CA import does not use --reuse-credentials")
-    firmware = Path(update_bin).resolve(strict=True)
     card = Path(target).resolve()
+    version, stub = firmware_stub(device_version)
     credentials = Path(credentials_dir).resolve() if credentials_dir else None
     if credentials and (card == credentials or card in credentials.parents or credentials in card.parents):
         raise ValueError("Credentials and SD-card directories must be separate, non-nested paths")
     if card.exists() and not card.is_dir():
         raise ValueError("SD target must be a directory or mounted card")
-    header = firmware_header(firmware, device_version)
-    if expected_sha256 and header["sha256"] != expected_sha256.lower():
-        raise ValueError("Firmware SHA-256 does not match the supplied checksum")
     relative_files = ("VH/firmware1a/update.bin", "VH/skyport_root.pem",
                       "VH/gallery/skyport_root.pem", "VH/gallery/gallery.bin")
     destinations = [_check_destination(card, name) for name in relative_files]
-    if firmware in destinations:
-        raise ValueError("Firmware input must be outside the output file paths")
     if not force and any(path.exists() for path in destinations):
         raise FileExistsError("SD output files already exist; inspect them before using --force")
     ca = None
@@ -108,7 +82,8 @@ def build(update_bin, target, credentials_dir=None, device_version="6.93", *,
         if credentials.exists():
             raise FileExistsError("Credentials directory already exists; use --reuse-credentials explicitly")
         bundle = {"directory": str(credentials), "root_sha256": "generated when writing"}
-    result = {"target": str(card), "credentials": bundle, "public_ca": public_ca, "firmware": header,
+    result = {"target": str(card), "credentials": bundle, "public_ca": public_ca,
+              "firmware": {"version": version, "stub": stub.hex(" ").upper()},
               "files": list(relative_files), "dry_run": dry_run}
     if dry_run:
         return result
@@ -116,12 +91,14 @@ def build(update_bin, target, credentials_dir=None, device_version="6.93", *,
         result["credentials"] = generate(credentials)
     if ca is None:
         ca = (credentials / "root-ca.pem").read_bytes()
-    _replace(destinations[0], source=firmware)
-    for destination, contents in zip(destinations[1:], (ca, ca, GALLERY)):
+    gallery = json.dumps({
+        "time": int(time.time()), "origin": 1, "model": "VH", "version": version[2:],
+        "imgs": [{"path": "../skyport_root.pem", "ssExclude": True,
+                  "useAsBackground": False}],
+    }, separators=(",", ":")).encode("utf-8")
+    for destination, contents in zip(destinations, (stub, ca, ca, gallery)):
         _replace(destination, contents=contents)
-    if digest(destinations[0]) != header["sha256"]:
-        raise ValueError("Written firmware failed checksum verification")
-    for destination, expected in zip(destinations[1:], (ca, ca, GALLERY)):
+    for destination, expected in zip(destinations, (stub, ca, ca, gallery)):
         if destination.read_bytes() != expected:
             raise ValueError(f"Written SD file failed verification: {destination}")
     return result
@@ -129,13 +106,12 @@ def build(update_bin, target, credentials_dir=None, device_version="6.93", *,
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--update-bin", required=True, help="Official matching VH firmware package")
     parser.add_argument("--target", required=True, help="Mounted FAT32 card or staging directory")
     identity = parser.add_mutually_exclusive_group(required=True)
     identity.add_argument("--credentials-dir", help="Separate directory for newly generated credentials")
-    identity.add_argument("--root-ca-pem", help="Use a public CA downloaded from the add-on; generate no keys")
-    parser.add_argument("--device-version", default="6.93")
-    parser.add_argument("--expected-sha256", help="Optional trusted firmware checksum")
+    identity.add_argument("--root-ca-pem", help="Use the active public CA PEM; generate no keys")
+    parser.add_argument("--firmware-version", "--device-version", dest="device_version", required=True,
+                        help="Version shown on the thermostat About screen, such as VH6.93")
     parser.add_argument("--reuse-credentials", action="store_true", help="Explicitly use this installation's existing bundle")
     parser.add_argument("--dry-run", action="store_true", help="Validate and print plan; write nothing, including keys")
     parser.add_argument("--force", action="store_true", help="Replace existing card output files; never replaces keys")
@@ -148,6 +124,7 @@ def main():
     if not result["dry_run"]:
         print("Card verified. " + ("No private keys were read or written." if result["public_ca"] else
                                   "Private keys are only in the separate credentials directory."))
+        print("The four-byte firmware stub only identifies the installed version; it does not update firmware.")
         print("Import Images under Settings > Import/Export, then restart the thermostat.")
         print("Importing deletes custom wallpapers. Reboot alone does not run the import.")
 

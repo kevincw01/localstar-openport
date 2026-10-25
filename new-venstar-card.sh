@@ -4,18 +4,18 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: ./new-venstar-card.sh --update-bin FILE --target DIRECTORY \
+Usage: ./new-venstar-card.sh --firmware-version VH6.93 --target DIRECTORY \
          (--credentials-dir DIRECTORY | --root-ca-pem FILE) [OPTIONS]
 
-Build a Venstar VH CA-import card using fresh credentials or the add-on's public CA.
+Build a Venstar VH CA-import card with a four-byte version stub, using fresh
+credentials or the add-on's public CA. The version must match the thermostat.
 The target can be a mounted FAT32 card or a staging directory. This script never
 formats disks. Check the mount path and filesystem before writing to a card.
 
 Options:
   --python EXECUTABLE       Python 3.11+ executable (default: $PYTHON or python3)
-  --root-ca-pem FILE        Use the add-on's public CA without generating keys
-  --device-version VERSION Installed thermostat version (default: 6.93)
-  --expected-sha256 HASH    Verify the firmware against a trusted checksum
+  --root-ca-pem FILE          Use the active public CA PEM without generating keys
+  --firmware-version VERSION  Version shown on the thermostat About screen
   --dry-run                Validate and print the plan; write nothing
   --reuse-credentials      Explicitly reuse this installation's existing bundle
   --force                  Replace card output files; never overwrites keys
