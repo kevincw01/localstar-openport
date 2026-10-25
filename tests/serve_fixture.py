@@ -7,7 +7,7 @@ import sys
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import venstar_weather_server as server
+from localstar_openport import server
 
 PROVIDER = {
     "current": {"temperature_2m": 68, "relative_humidity_2m": 50,

@@ -20,8 +20,8 @@ the thermostat through its local API. This project implements the separate Skypo
 weather session; it does not implement all the features of skyport, only weather, 
 ping and time.  
 
-The local skyport server is designed to run on linux but could be ported to other
-operating systems or as a Home Assistant add-on fairly easily.  Besides the unique
+The local Skyport server can run standalone or as a Home Assistant Supervisor
+add-on/app. Besides the unique
 root CA that must be deployed to the thermostat via the SD card, the local network
 dns server (typically on the local internet router/firewall) must be configured to
 route the cloud address to the LAN server.  Open-meteo is used by the server to
@@ -141,6 +141,9 @@ Use this only on thermostats you own and intend to redirect to your server.
 
 ## Run the server
 
+For Home Assistant OS, see [Install the Home Assistant add-on](#home-assistant-add-on)
+below. For standalone use, follow these command-line instructions.
+
 Copy `server-chain.pem` and `server.key` to the server, then supply **your own**
 coordinates and IANA timezone. Replace the uppercase placeholders below:
 
@@ -180,6 +183,33 @@ TLS 1.2+ is used by default. `--allow-old-tls` explicitly enables older TLS/ciph
 for firmware that requires them. Logs include every received ping and successful
 echo separately.
 
+## Home Assistant add-on
+
+**localstar-openport** is available as a Supervisor add-on/app for `aarch64`
+and `amd64`. It runs independently of HA Core; keep the existing Venstar integration
+for thermostat controls. This package is installed through the Supervisor store,
+not HACS.
+
+[Add this repository to Home Assistant](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fkevincw01%2Flocalstar-openport)
+
+1. Open **Settings > Add-ons > Add-on Store > ⋮ > Repositories** (or the Apps store
+   on versions using that name), and add `https://github.com/kevincw01/localstar-openport`.
+2. Install **localstar-openport**. The container builds locally on your HA host.
+3. Copy your matching `server-chain.pem` and `server.key` to the shared HA SSL
+   directory under `localstar-openport/`.
+4. Set latitude, longitude, and timezone in its Configuration tab, then start it.
+   Enable **Start on boot** and **Watchdog**.
+5. Point `connect.skyport.io` at the HA host and allow thermostat access to TCP
+   9001/41414 there. Keep host session port 41414.
+
+The add-on never generates or replaces credentials at startup. Reuse your working
+pair to avoid another thermostat CA import. No HA API token or privileged host
+access is needed. The SSL mount is read-only, and location has no personal defaults.
+The standalone launcher and the add-on use the same server implementation.
+
+See [add-on documentation](localstar_openport/DOCS.md) for complete configuration,
+backups, migration, and rollback instructions.
+
 
 ## Import on the thermostat
 
@@ -199,6 +229,7 @@ the skyport settings.
 ## Tests
 
 ```sh
+python -m pip install -r requirements-dev.txt
 python -m unittest discover -s tests -v
 ```
 
@@ -208,4 +239,7 @@ conversion, and card contents without contacting the weather provider or a therm
 If PowerShell is installed, the launcher is also exercised against a staging folder.
 On POSIX systems, the Bash launcher is tested from another working directory with
 paths containing spaces, dry runs, explicit credential reuse, and invalid inputs.
+Add-on tests cover option validation, certificate handling, and startup failure
+when either TLS port is unavailable. Container smoke testing is described in
+[tests/smoke_addon.py](tests/smoke_addon.py).
 Firmware acceptance and on-device import/rendering require a separate hardware test.
