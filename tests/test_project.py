@@ -264,10 +264,20 @@ class TestServer(unittest.TestCase):
         stamp = receive(conn)['timestamp']
         expected = datetime.now(ZoneInfo('Europe/London')).replace(tzinfo=timezone.utc).timestamp() * 1000
         self.assertLess(abs(stamp - expected), 5000)
-        send(conn, {'command': 59, 'sequence': 100})
-        reply = receive(conn)
-        self.assertEqual(reply['command'], 60)
-        self.assertEqual(reply['sequence'], 100)
+        # Listener readiness does not imply the background weather fetch has
+        # finished, even with a deterministic provider. Exercise the documented
+        # initial unavailable response until the fixture cache is populated.
+        deadline = time.monotonic() + 5
+        while True:
+            send(conn, {'command': 59, 'sequence': 100})
+            reply = receive(conn)
+            self.assertEqual(reply['command'], 60)
+            self.assertEqual(reply['sequence'], 100)
+            if not reply.get('error'):
+                break
+            if time.monotonic() >= deadline:
+                self.fail('Fixture weather cache did not populate')
+            time.sleep(.01)
         payload = json.loads(reply['data'])
         self.assertEqual(payload['current']['temp_f'], 68)
         self.assertEqual(payload['current']['temp_c'], 20)
