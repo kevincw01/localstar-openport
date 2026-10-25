@@ -1,1 +1,2 @@
--r localstar_openport/requirements.txt
+cryptography>=41
+tzdata
