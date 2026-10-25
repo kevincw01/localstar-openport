@@ -73,6 +73,32 @@ class TestCard(unittest.TestCase):
         self.assertFalse(self.card.exists())
         self.assertFalse(self.creds.exists())
 
+    def test_public_ca_from_addon_does_not_generate_or_require_private_keys(self):
+        generate(self.creds)
+        public = self.root / 'downloaded-root.pem'
+        public.write_bytes((self.creds / 'root-ca.pem').read_bytes())
+        shutil.rmtree(self.creds)
+        inspected = build(self.update, self.card, root_ca_pem=public, dry_run=True)
+        self.assertTrue(inspected['dry_run'])
+        self.assertFalse(self.card.exists())
+        result = build(self.update, self.card, root_ca_pem=public)
+        self.assertIsNone(result['credentials'])
+        self.assertEqual((self.card / 'VH/skyport_root.pem').read_bytes(), public.read_bytes())
+        self.assertFalse(self.creds.exists())
+        self.assertFalse(any(self.card.rglob('*.key')))
+        with self.assertRaises(ValueError):
+            build(self.update, self.card, self.creds, root_ca_pem=public, force=True)
+
+    def test_public_ca_rejects_leaf_and_private_key_material(self):
+        generate(self.creds)
+        for data in [(self.creds / 'server.pem').read_bytes(),
+                     (self.creds / 'root-ca.pem').read_bytes() + (self.creds / 'root-ca.key').read_bytes()]:
+            public = self.root / 'bad-root.pem'
+            public.write_bytes(data)
+            with self.assertRaises(ValueError):
+                build(self.update, self.card, root_ca_pem=public)
+        self.assertFalse(self.card.exists())
+
     def test_bad_firmware_rejected_before_writes(self):
         with self.assertRaises(ValueError):
             self.make(device_version='6.92')
@@ -122,6 +148,13 @@ class TestCard(unittest.TestCase):
         subprocess.run(args, check=True, capture_output=True, text=True)
         self.assertTrue((card / 'VH/skyport_root.pem').is_file())
         validate(creds)
+        imported = self.root / 'public CA card'
+        public_args = ['pwsh', '-NoProfile', '-File', str(ROOT / 'New-VenstarCard.ps1'),
+                       '-TargetPath', str(imported), '-UpdateBin', str(self.update),
+                       '-RootCaPem', str(creds / 'root-ca.pem'), '-PythonCommand', sys.executable]
+        subprocess.run(public_args, check=True, capture_output=True, text=True)
+        self.assertEqual((imported / 'VH/skyport_root.pem').read_bytes(),
+                         (creds / 'root-ca.pem').read_bytes())
 
     @unittest.skipUnless(os.name == 'posix' and shutil.which('bash'), 'POSIX Bash launcher')
     def test_bash_launcher_build_dry_run_reuse_and_errors(self):
@@ -147,6 +180,12 @@ class TestCard(unittest.TestCase):
         reused = run([*args, '--reuse-credentials', '--force'])
         self.assertEqual(reused.returncode, 0, reused.stderr)
         self.assertEqual(validate(creds)['root_sha256'], original)
+        imported = self.root / 'public CA card'
+        public_result = run([launcher, '--python', sys.executable, '--update-bin', str(package),
+                             '--target', str(imported), '--root-ca-pem', str(creds / 'root-ca.pem')])
+        self.assertEqual(public_result.returncode, 0, public_result.stderr)
+        self.assertEqual((imported / 'VH/skyport_root.pem').read_bytes(),
+                         (creds / 'root-ca.pem').read_bytes())
         for path in card.rglob('*'):
             if path.is_file():
                 self.assertNotIn(b'PRIVATE KEY', path.read_bytes())

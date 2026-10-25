@@ -4,7 +4,8 @@
 Build a Venstar VH CA-import SD card with fresh installation-specific credentials.
 .DESCRIPTION
 Requires Python 3.11+ and the packages in requirements.txt. Does not format cards.
-Private keys are written to CredentialsDirectory, never to the SD card.
+When generating, private keys are written to CredentialsDirectory, never to the SD card.
+Alternatively use RootCaPem for a public CA downloaded from the HA add-on; no keys are read or generated.
 Inspect validates inputs without writing files or generating credentials.
 #>
 [CmdletBinding()]
@@ -13,7 +14,8 @@ param(
     [ValidatePattern('^[A-Za-z]$')][string]$DriveLetter,
     [Parameter(Mandatory = $true, ParameterSetName = 'Path')][string]$TargetPath,
     [Parameter(Mandatory = $true)][string]$UpdateBin,
-    [Parameter(Mandatory = $true)][string]$CredentialsDirectory,
+    [string]$CredentialsDirectory,
+    [string]$RootCaPem,
     [string]$DeviceVersion = '6.93',
     [string]$PythonCommand = 'python',
     [string]$ExpectedSha256,
@@ -32,7 +34,9 @@ if ($DriveLetter) {
 }
 $builder = Join-Path $PSScriptRoot 'build_sdcard.py'
 $builderArgs = @($builder, '--update-bin', $UpdateBin, '--target', $TargetPath,
-    '--credentials-dir', $CredentialsDirectory, '--device-version', $DeviceVersion)
+    '--device-version', $DeviceVersion)
+if ($CredentialsDirectory) { $builderArgs += @('--credentials-dir', $CredentialsDirectory) }
+if ($RootCaPem) { $builderArgs += @('--root-ca-pem', $RootCaPem) }
 if ($ExpectedSha256) { $builderArgs += @('--expected-sha256', $ExpectedSha256) }
 if ($ReuseCredentials) { $builderArgs += '--reuse-credentials' }
 if ($Inspect) { $builderArgs += '--dry-run' }

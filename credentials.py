@@ -1,6 +1,7 @@
 """Generate installation-specific Skyport credentials; never ships a shared key."""
 
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -14,6 +15,35 @@ NOT_AFTER = datetime(2037, 12, 12, 23, 59, 59, tzinfo=timezone.utc)
 HOSTNAMES = ("connect.skyport.io", "connectcl.skyport.io", "connectjs.skyport.io",
              "ctupdate.skyport.io", "*.skyport.io")
 FILES = ("root-ca.pem", "root-ca.key", "server.pem", "server.key", "server-chain.pem")
+
+
+def public_root(path):
+    """Read a public CA downloaded from the add-on, without needing private keys."""
+    pem = Path(path).read_bytes()
+    if not re.fullmatch(rb'\s*-----BEGIN CERTIFICATE-----[A-Za-z0-9+/=\s]+-----END CERTIFICATE-----\s*', pem):
+        raise ValueError("Public CA input must contain exactly one PEM certificate and no private keys")
+    ca = x509.load_pem_x509_certificate(pem)
+    try:
+        is_ca = ca.extensions.get_extension_for_class(x509.BasicConstraints).value.ca
+    except x509.ExtensionNotFound as exc:
+        raise ValueError("Public root is missing CA basic constraints") from exc
+    if not is_ca:
+        raise ValueError("Supplied public certificate is not a CA")
+    if not isinstance(ca.public_key(), rsa.RSAPublicKey) or ca.issuer != ca.subject:
+        raise ValueError("Expected a self-signed RSA root CA")
+    try:
+        ca.public_key().verify(ca.signature, ca.tbs_certificate_bytes, padding.PKCS1v15(), ca.signature_hash_algorithm)
+    except Exception as exc:
+        raise ValueError("Public root CA signature is invalid") from exc
+    before = getattr(ca, 'not_valid_before_utc', None)
+    if before is None:
+        before = ca.not_valid_before.replace(tzinfo=timezone.utc)
+    after = getattr(ca, 'not_valid_after_utc', None)
+    if after is None:
+        after = ca.not_valid_after.replace(tzinfo=timezone.utc)
+    if before > NOT_BEFORE or after <= datetime.now(timezone.utc):
+        raise ValueError("Root CA must be valid at epoch zero and not expired")
+    return ca.public_bytes(serialization.Encoding.PEM), ca.fingerprint(hashes.SHA256()).hex()
 
 
 def _public(key):

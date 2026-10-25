@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a VH CA-import card, generating a unique root and matching TLS leaf."""
+"""Build a VH CA-import card with new credentials or an existing public root."""
 
 import argparse
 import hashlib
@@ -11,7 +11,7 @@ import shutil
 import struct
 import tempfile
 
-from credentials import generate, validate
+from credentials import generate, public_root, validate
 
 GALLERY = b'{"imgs":[{"path":"../skyport_root.pem","useAsBackground":false}]}\n'
 
@@ -72,12 +72,17 @@ def _replace(destination, source=None, contents=None):
             os.unlink(temporary)
 
 
-def build(update_bin, target, credentials_dir, device_version="6.93", *,
-          reuse_credentials=False, dry_run=False, force=False, expected_sha256=None):
+def build(update_bin, target, credentials_dir=None, device_version="6.93", *,
+          reuse_credentials=False, dry_run=False, force=False, expected_sha256=None,
+          root_ca_pem=None):
+    if bool(credentials_dir) == bool(root_ca_pem):
+        raise ValueError("Specify either credentials_dir or root_ca_pem, not both")
+    if root_ca_pem and reuse_credentials:
+        raise ValueError("Public-CA import does not use --reuse-credentials")
     firmware = Path(update_bin).resolve(strict=True)
     card = Path(target).resolve()
-    credentials = Path(credentials_dir).resolve()
-    if card == credentials or card in credentials.parents or credentials in card.parents:
+    credentials = Path(credentials_dir).resolve() if credentials_dir else None
+    if credentials and (card == credentials or card in credentials.parents or credentials in card.parents):
         raise ValueError("Credentials and SD-card directories must be separate, non-nested paths")
     if card.exists() and not card.is_dir():
         raise ValueError("SD target must be a directory or mounted card")
@@ -91,19 +96,26 @@ def build(update_bin, target, credentials_dir, device_version="6.93", *,
         raise ValueError("Firmware input must be outside the output file paths")
     if not force and any(path.exists() for path in destinations):
         raise FileExistsError("SD output files already exist; inspect them before using --force")
-    if reuse_credentials:
+    ca = None
+    public_ca = None
+    if root_ca_pem:
+        ca, fingerprint = public_root(root_ca_pem)
+        public_ca = {"file": str(Path(root_ca_pem).resolve()), "root_sha256": fingerprint}
+        bundle = None
+    elif reuse_credentials:
         bundle = validate(credentials)
     else:
         if credentials.exists():
             raise FileExistsError("Credentials directory already exists; use --reuse-credentials explicitly")
         bundle = {"directory": str(credentials), "root_sha256": "generated when writing"}
-    result = {"target": str(card), "credentials": bundle, "firmware": header,
+    result = {"target": str(card), "credentials": bundle, "public_ca": public_ca, "firmware": header,
               "files": list(relative_files), "dry_run": dry_run}
     if dry_run:
         return result
-    if not reuse_credentials:
+    if credentials and not reuse_credentials:
         result["credentials"] = generate(credentials)
-    ca = (credentials / "root-ca.pem").read_bytes()
+    if ca is None:
+        ca = (credentials / "root-ca.pem").read_bytes()
     _replace(destinations[0], source=firmware)
     for destination, contents in zip(destinations[1:], (ca, ca, GALLERY)):
         _replace(destination, contents=contents)
@@ -119,7 +131,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--update-bin", required=True, help="Official matching VH firmware package")
     parser.add_argument("--target", required=True, help="Mounted FAT32 card or staging directory")
-    parser.add_argument("--credentials-dir", required=True, help="Separate directory for newly generated credentials")
+    identity = parser.add_mutually_exclusive_group(required=True)
+    identity.add_argument("--credentials-dir", help="Separate directory for newly generated credentials")
+    identity.add_argument("--root-ca-pem", help="Use a public CA downloaded from the add-on; generate no keys")
     parser.add_argument("--device-version", default="6.93")
     parser.add_argument("--expected-sha256", help="Optional trusted firmware checksum")
     parser.add_argument("--reuse-credentials", action="store_true", help="Explicitly use this installation's existing bundle")
@@ -132,7 +146,8 @@ def main():
         parser.exit(1, f"Error: {exc}\n")
     print(json.dumps(result, indent=2))
     if not result["dry_run"]:
-        print("Card verified. Private keys are only in the separate credentials directory.")
+        print("Card verified. " + ("No private keys were read or written." if result["public_ca"] else
+                                  "Private keys are only in the separate credentials directory."))
         print("Import Images under Settings > Import/Export, then restart the thermostat.")
         print("Importing deletes custom wallpapers. Reboot alone does not run the import.")
 
