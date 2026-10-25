@@ -47,6 +47,12 @@ offers a firmware upgrade, cancel it.
 
 ## Build the SD card and generate credentials
 
+Read the version beside **Firmware** on the thermostat's **About** screen. Enter
+the complete value, including the `VH` prefix, when running the builder. For
+example, the pictured thermostat reports `VH6.93`:
+
+![Venstar thermostat About screen showing firmware version VH6.93](images/thermostat-about-firmware.jpg)
+
 On Windows, from a Python-enabled terminal (replace `E` with your card's drive letter which is mounted in windows):
 
 ```powershell
